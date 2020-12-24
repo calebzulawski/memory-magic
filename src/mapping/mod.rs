@@ -2,20 +2,9 @@
 #[cfg_attr(windows, path = "windows.rs")]
 mod map_impl;
 
-use crate::error::Error;
 use once_cell::sync::OnceCell;
 use std::convert::TryInto;
-
-pub enum PageAccess {
-    Read,
-    Write,
-    CopyOnWrite,
-}
-
-pub struct MapOptions {
-    access: PageAccess,
-    executable: bool,
-}
+use std::io::Error;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum FileAccess {
@@ -23,16 +12,17 @@ pub enum FileAccess {
     Write,
 }
 
+#[derive(Copy, Clone, Debug)]
+pub struct FileOptions {
+    access: FileAccess,
+    execute: bool,
+}
+
 /// Shared memory
+#[derive(Debug)]
 pub struct Mapping {
     inner: map_impl::Mapping,
     size: u64,
-}
-
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub struct FileOptions {
-    access: FileAccess,
-    executable: bool,
 }
 
 impl Mapping {
@@ -63,20 +53,6 @@ impl Mapping {
             inner: map_impl::Mapping::with_file(file, size, options)?,
             size,
         })
-    }
-
-    unsafe fn map(&self, offset: u64, size: usize, options: &MapOptions) -> Result<*mut u8, Error> {
-        self.inner.map(offset, size, options)
-    }
-
-    unsafe fn map_hint(
-        &self,
-        ptr: *mut u8,
-        offset: u64,
-        size: usize,
-        options: &MapOptions,
-    ) -> Result<(), Error> {
-        self.inner.map_hint(ptr, offset, size, options)
     }
 }
 
@@ -157,5 +133,76 @@ impl Length {
 
     pub fn to_usize(self) -> usize {
         self.0
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+enum PageAccess {
+    Read,
+    Write,
+    CopyOnWrite,
+}
+
+#[derive(Copy, Clone, Debug)]
+struct PageProtection {
+    access: PageAccess,
+    execute: bool,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub(crate) struct ViewOptions {
+    offset: u64,
+    length: usize,
+    protection: PageProtection,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct View<'a> {
+    options: ViewOptions,
+    mapping: &'a map_impl::Mapping,
+}
+
+impl View<'_> {
+    pub fn is_executable(&self) -> bool {
+        self.options.protection.execute
+    }
+
+    pub fn is_mutable(&self) -> bool {
+        std::matches!(
+            self.options.protection.access,
+            PageAccess::Write | PageAccess::CopyOnWrite
+        )
+    }
+}
+
+pub mod alloc {
+    use super::*;
+
+    pub fn map_length<'a>(views: &[View<'a>]) -> usize {
+        views.iter().fold(0usize, |len, view| {
+            len.checked_add(view.options.length).unwrap()
+        })
+    }
+
+    pub fn allocate<'a>(views: &[View<'a>]) -> Result<*const u8, Error> {
+        map_impl::allocate(views, false).map(|x| x as *const u8)
+    }
+
+    pub fn allocate_mut<'a>(views: &[View<'a>]) -> Result<*mut u8, Error> {
+        map_impl::allocate(views, true)
+    }
+
+    pub unsafe fn deallocate(
+        map: *const u8,
+        view_lengths: impl Iterator<Item = usize>,
+    ) -> Result<(), Error> {
+        map_impl::deallocate(map as *mut u8, view_lengths)
+    }
+
+    pub unsafe fn deallocate_mut(
+        map: *mut u8,
+        view_lengths: impl Iterator<Item = usize>,
+    ) -> Result<(), Error> {
+        map_impl::deallocate(map, view_lengths)
     }
 }

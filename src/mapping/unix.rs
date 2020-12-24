@@ -1,21 +1,36 @@
-use super::{FileAccess, FileOptions, MapOptions, PageAccess};
-use crate::error::Error;
+use super::*;
+use crate::error::{access_denied, to_io_error};
 use nix::{
-    errno::Errno,
     fcntl::{fcntl, FcntlArg, OFlag},
     libc::c_int,
-    sys::mman::{mmap, MapFlags, ProtFlags},
+    sys::mman::{mmap, munmap, MapFlags, ProtFlags},
     unistd::{close, ftruncate, sysconf, SysconfVar},
 };
 use std::convert::TryInto;
+use std::io::Error;
 
-impl MapOptions {
+fn open_anonymous(size: i64) -> Result<c_int, Error> {
+    let fd = shm_open_anonymous::shm_open_anonymous();
+    if fd == -1 {
+        Err(Error::last_os_error())
+    } else {
+        ftruncate(fd, size).map_err(|e| {
+            let _ = close(fd);
+            to_io_error(e)
+        })?;
+        Ok(fd)
+    }
+}
+
+impl PageProtection {
     fn prot_flags(&self) -> ProtFlags {
         let mut flags = match self.access {
             PageAccess::Read => ProtFlags::PROT_READ,
-            _ => ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
+            PageAccess::Write | PageAccess::CopyOnWrite => {
+                ProtFlags::PROT_READ | ProtFlags::PROT_WRITE
+            }
         };
-        if self.executable {
+        if self.execute {
             flags |= ProtFlags::PROT_EXEC;
         }
         flags
@@ -29,6 +44,7 @@ impl MapOptions {
     }
 }
 
+#[derive(Debug)]
 pub struct Mapping {
     fd: c_int,
     executable: bool,
@@ -36,22 +52,16 @@ pub struct Mapping {
 
 impl Drop for Mapping {
     fn drop(&mut self) {
-        debug_assert!(close(self.fd).is_ok());
+        let _ = close(self.fd);
     }
 }
 
 impl Mapping {
     pub fn anonymous(size: usize, executable: bool) -> Result<Self, Error> {
-        let mapped = Mapping {
-            fd: shm_open_anonymous::shm_open_anonymous(),
+        Ok(Mapping {
+            fd: open_anonymous(size.try_into().unwrap())?,
             executable,
-        };
-        if mapped.fd == -1 {
-            Err(std::io::Error::last_os_error().into())
-        } else {
-            ftruncate(mapped.fd, size.try_into().unwrap())?;
-            Ok(mapped)
-        }
+        })
     }
 
     pub unsafe fn with_file(
@@ -62,59 +72,42 @@ impl Mapping {
         let file = file.try_clone()?;
         let mapped = Mapping {
             fd: std::os::unix::io::IntoRawFd::into_raw_fd(file),
-            executable: options.executable,
+            executable: options.execute,
         };
 
         // Check permissions:
         // * The file must be opened read-write
         // * We cannot write to a file opened in append-mode with mmap
-        let oflags = OFlag::from_bits(fcntl(mapped.fd, FcntlArg::F_GETFL)?).unwrap();
+        let oflags =
+            OFlag::from_bits(fcntl(mapped.fd, FcntlArg::F_GETFL).map_err(to_io_error)?).unwrap();
         if options.access == FileAccess::Write
             && (!oflags.contains(OFlag::O_RDWR) || oflags.contains(OFlag::O_APPEND))
         {
-            Err(nix::Error::from_errno(Errno::EACCES).into())
+            Err(access_denied())
         } else {
             Ok(mapped)
         }
     }
 
-    unsafe fn map_impl(
-        &self,
-        ptr: *mut u8,
-        offset: u64,
-        size: usize,
-        options: &MapOptions,
-    ) -> Result<*mut u8, Error> {
+    unsafe fn map_impl(&self, ptr: *mut u8, view: &ViewOptions) -> Result<*mut u8, Error> {
         mmap(
             ptr as *mut _,
-            size.try_into().unwrap(),
-            options.prot_flags(),
-            options.map_flags(),
+            view.length,
+            view.protection.prot_flags(),
+            view.protection.map_flags(),
             self.fd,
-            offset.try_into().unwrap(),
+            view.offset.try_into().unwrap(),
         )
         .map(|x| x as *mut u8)
-        .map_err(Into::into)
+        .map_err(crate::error::to_io_error)
     }
 
-    pub unsafe fn map(
-        &self,
-        offset: u64,
-        size: usize,
-        options: &MapOptions,
-    ) -> Result<*mut u8, Error> {
-        self.map_impl(std::ptr::null_mut(), offset, size, options)
+    pub(crate) unsafe fn map(&self, view: &ViewOptions) -> Result<*mut u8, Error> {
+        self.map_impl(std::ptr::null_mut(), view)
     }
 
-    pub unsafe fn map_hint(
-        &self,
-        ptr: *mut u8,
-        offset: u64,
-        size: usize,
-        options: &MapOptions,
-    ) -> Result<(), Error> {
-        self.map_impl(ptr, offset, size, options)
-            .map(std::mem::drop)
+    pub(crate) unsafe fn map_hint(&self, ptr: *mut u8, view: &ViewOptions) -> Result<(), Error> {
+        self.map_impl(ptr, view).map(std::mem::drop)
     }
 }
 
@@ -132,4 +125,54 @@ pub fn offset_granularity() -> u64 {
 
 pub fn length_granularity() -> usize {
     page_size().try_into().unwrap()
+}
+
+pub fn allocate<'a>(views: &[View<'a>], mutable: bool) -> Result<*mut u8, Error> {
+    if mutable && !views.iter().all(|view| view.is_mutable()) {
+        return Err(access_denied());
+    }
+
+    // Allocate mapping
+    let len = alloc::map_length(views);
+    let ptr = {
+        let fd = open_anonymous(len.try_into().unwrap())?;
+        let ptr = unsafe {
+            mmap(
+                std::ptr::null_mut(),
+                len,
+                ProtFlags::PROT_NONE,
+                MapFlags::MAP_SHARED,
+                fd,
+                0,
+            )
+        };
+        // close fd unconditionally before checking error
+        close(fd).map_err(crate::error::to_io_error)?;
+        ptr.map(|ptr| ptr as *mut u8)
+            .map_err(crate::error::to_io_error)
+    }?;
+
+    let try_map = || {
+        let mut offset = 0;
+        for view in views {
+            unsafe {
+                view.mapping.map_hint(ptr.add(offset), &view.options)?;
+            }
+            offset += view.options.length;
+        }
+        Ok(ptr as *mut u8)
+    };
+
+    try_map().map_err(|e| unsafe {
+        let _ = munmap(ptr as *mut _, len);
+        e
+    })
+}
+
+pub unsafe fn deallocate(
+    map: *const u8,
+    view_lengths: impl Iterator<Item = usize>,
+) -> Result<(), Error> {
+    let len = view_lengths.fold(0usize, |len, view_len| len.checked_add(view_len).unwrap());
+    munmap(map as *mut _, len).map_err(to_io_error)
 }

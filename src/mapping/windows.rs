@@ -1,36 +1,37 @@
-use super::{FileAccess, FileOptions, MapOptions, PageAccess};
-use crate::error::Error;
+use super::*;
+use crate::error::access_denied;
 use std::convert::TryInto;
 use winapi::{
     shared::minwindef::DWORD,
     um::{
         handleapi::INVALID_HANDLE_VALUE,
         memoryapi::{
-            CreateFileMappingW, MapViewOfFileEx, FILE_MAP_ALL_ACCESS, FILE_MAP_COPY,
-            FILE_MAP_EXECUTE, FILE_MAP_READ,
+            CreateFileMappingW, MapViewOfFileEx, UnmapViewOfFile, VirtualAlloc, VirtualFree,
+            FILE_MAP_ALL_ACCESS, FILE_MAP_COPY, FILE_MAP_EXECUTE, FILE_MAP_READ,
         },
         sysinfoapi::{GetSystemInfo, SYSTEM_INFO},
         winnt::{
-            HANDLE, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE, PAGE_READONLY, PAGE_READWRITE,
-            SEC_COMMIT,
+            HANDLE, MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE,
+            PAGE_NOACCESS, PAGE_READONLY, PAGE_READWRITE, SEC_COMMIT,
         },
     },
 };
 
-impl MapOptions {
+impl PageProtection {
     fn access_flags(&self) -> DWORD {
         let mut flags = match self.access {
             PageAccess::Read => FILE_MAP_READ,
             PageAccess::Write => FILE_MAP_ALL_ACCESS,
             PageAccess::CopyOnWrite => FILE_MAP_READ | FILE_MAP_COPY,
         };
-        if self.executable {
+        if self.execute {
             flags |= FILE_MAP_EXECUTE;
         }
         flags
     }
 }
 
+#[derive(Debug)]
 pub struct Mapping {
     handle: HANDLE,
 }
@@ -82,7 +83,7 @@ impl Mapping {
         size: u64,
         options: &FileOptions,
     ) -> Result<Self, Error> {
-        let access = match (options.executable, options.access) {
+        let access = match (options.execute, options.access) {
             (false, FileAccess::Read) => PAGE_READONLY,
             (false, FileAccess::Write) => PAGE_READWRITE,
             (true, FileAccess::Read) => PAGE_EXECUTE_READ,
@@ -104,47 +105,29 @@ impl Mapping {
         }
     }
 
-    unsafe fn map_impl(
-        &self,
-        ptr: *mut u8,
-        offset: u64,
-        size: usize,
-        options: &MapOptions,
-    ) -> Result<*mut u8, Error> {
-        let (offset_hi, offset_lo) = split_dword(offset);
+    unsafe fn map_impl(&self, ptr: *mut u8, view: &ViewOptions) -> Result<*mut u8, Error> {
+        let (offset_hi, offset_lo) = split_dword(view.offset);
         let addr = MapViewOfFileEx(
             self.handle,
-            options.access_flags(),
+            view.protection.access_flags(),
             offset_hi,
             offset_lo,
-            size,
+            view.length,
             ptr as *mut _,
         );
         if addr.is_null() {
-            Err(std::io::Error::last_os_error().into())
+            Err(Error::last_os_error())
         } else {
             Ok(addr as *mut u8)
         }
     }
 
-    pub unsafe fn map(
-        &self,
-        offset: u64,
-        size: usize,
-        options: &MapOptions,
-    ) -> Result<*mut u8, Error> {
-        self.map_impl(std::ptr::null_mut(), offset, size, options)
+    unsafe fn map(&self, view: &ViewOptions) -> Result<*mut u8, Error> {
+        self.map_impl(std::ptr::null_mut(), view)
     }
 
-    pub unsafe fn map_hint(
-        &self,
-        ptr: *mut u8,
-        offset: u64,
-        size: usize,
-        options: &MapOptions,
-    ) -> Result<(), Error> {
-        self.map_impl(ptr as *mut _, offset, size, options)
-            .map(std::mem::drop)
+    unsafe fn map_hint(&self, ptr: *mut u8, view: &ViewOptions) -> Result<(), Error> {
+        self.map_impl(ptr as *mut _, view).map(std::mem::drop)
     }
 }
 
@@ -162,4 +145,70 @@ pub fn offset_granularity() -> u64 {
 
 pub fn length_granularity() -> usize {
     system_info().dwAllocationGranularity.try_into().unwrap()
+}
+
+pub fn allocate<'a>(views: &[View<'a>], mutable: bool) -> Result<*mut u8, Error> {
+    if mutable && !views.iter().all(|view| view.is_mutable()) {
+        return Err(access_denied());
+    }
+
+    // Allocate mapping
+    let len = views.iter().fold(0usize, |len, view| {
+        len.checked_add(view.options.length).unwrap()
+    });
+
+    let try_map = || {
+        let ptr = unsafe {
+            let ptr = VirtualAlloc(std::ptr::null_mut(), len, MEM_RESERVE, PAGE_NOACCESS);
+            if ptr.is_null() || VirtualFree(ptr, 0, MEM_RELEASE) == 0 {
+                return Err(Error::last_os_error());
+            }
+            ptr as *mut u8
+        };
+
+        let mut offset = 0;
+        for (i, view) in views.iter().enumerate() {
+            unsafe {
+                view.mapping
+                    .map_hint(ptr.add(offset), &view.options)
+                    .map_err(|e| {
+                        let _ = deallocate(ptr, views[..i].iter().map(|view| view.options.length));
+                        e
+                    })?;
+            }
+            offset += view.options.length;
+        }
+        Ok(ptr)
+    };
+
+    let mut tries = 0;
+    const MAX_TRIES: usize = 10;
+    loop {
+        tries += 1;
+        match try_map() {
+            Ok(ptr) => break Ok(ptr),
+            Err(err) => {
+                if tries == MAX_TRIES {
+                    break Err(err);
+                } else {
+                    continue;
+                }
+            }
+        }
+    }
+}
+
+pub unsafe fn deallocate(
+    map: *mut u8,
+    view_lengths: impl Iterator<Item = usize>,
+) -> Result<(), Error> {
+    let mut result = Ok(());
+    let mut offset = 0;
+    for length in view_lengths {
+        if UnmapViewOfFile(map.add(offset) as *const _) == 0 && result.is_ok() {
+            result = Err(Error::last_os_error());
+        }
+        offset += length;
+    }
+    result
 }
