@@ -5,7 +5,7 @@ use nix::{
     fcntl::{fcntl, FcntlArg, OFlag},
     libc::c_int,
     sys::mman::{mmap, MapFlags, ProtFlags},
-    unistd::{close, ftruncate},
+    unistd::{close, ftruncate, sysconf, SysconfVar},
 };
 use std::convert::TryInto;
 
@@ -116,4 +116,20 @@ impl Mapping {
         self.map_impl(ptr, offset, size, options)
             .map(std::mem::drop)
     }
+}
+
+fn page_size() -> u64 {
+    sysconf(SysconfVar::PAGE_SIZE)
+        .unwrap()
+        .unwrap()
+        .try_into()
+        .unwrap()
+}
+
+pub fn offset_granularity() -> u64 {
+    page_size()
+}
+
+pub fn length_granularity() -> usize {
+    page_size().try_into().unwrap()
 }

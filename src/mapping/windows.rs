@@ -9,6 +9,7 @@ use winapi::{
             CreateFileMappingW, MapViewOfFileEx, FILE_MAP_ALL_ACCESS, FILE_MAP_COPY,
             FILE_MAP_EXECUTE, FILE_MAP_READ,
         },
+        sysinfoapi::{GetSystemInfo, SYSTEM_INFO},
         winnt::{
             HANDLE, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE, PAGE_READONLY, PAGE_READWRITE,
             SEC_COMMIT,
@@ -145,4 +146,20 @@ impl Mapping {
         self.map_impl(ptr as *mut _, offset, size, options)
             .map(std::mem::drop)
     }
+}
+
+fn system_info() -> SYSTEM_INFO {
+    unsafe {
+        let mut system_info = std::mem::MaybeUninit::<SYSTEM_INFO>::uninit();
+        GetSystemInfo(system_info.as_mut_ptr());
+        system_info.assume_init()
+    }
+}
+
+pub fn offset_granularity() -> u64 {
+    system_info().dwPageSize.try_into().unwrap()
+}
+
+pub fn length_granularity() -> usize {
+    system_info().dwAllocationGranularity.try_into().unwrap()
 }
