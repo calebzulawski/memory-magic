@@ -17,22 +17,19 @@ use winapi::{
     },
 };
 
-impl PageProtection {
+impl ViewPermissions {
     fn access_flags(&self) -> DWORD {
-        let mut flags = match self.access {
-            PageAccess::Read => FILE_MAP_READ,
-            PageAccess::Write => FILE_MAP_ALL_ACCESS,
-            PageAccess::CopyOnWrite => FILE_MAP_READ | FILE_MAP_COPY,
-        };
-        if self.execute {
-            flags |= FILE_MAP_EXECUTE;
+        match self {
+            Self::Read => FILE_MAP_READ,
+            Self::Write => FILE_MAP_ALL_ACCESS,
+            Self::CopyOnWrite => FILE_MAP_READ | FILE_MAP_COPY,
+            Self::Execute => FILE_MAP_EXECUTE,
         }
-        flags
     }
 }
 
 #[derive(Debug)]
-pub struct Mapping {
+pub struct MappedObject {
     handle: HANDLE,
 }
 
@@ -53,7 +50,7 @@ where
     )
 }
 
-impl Mapping {
+impl MappedObject {
     pub fn anonymous(size: usize, executable: bool) -> Result<Self, Error> {
         let access = if executable {
             PAGE_EXECUTE_READWRITE | SEC_COMMIT
@@ -81,13 +78,12 @@ impl Mapping {
     pub unsafe fn with_file(
         file: &std::fs::File,
         size: u64,
-        options: &FileOptions,
+        permissions: FilePermissions,
     ) -> Result<Self, Error> {
-        let access = match (options.execute, options.access) {
-            (false, FileAccess::Read) => PAGE_READONLY,
-            (false, FileAccess::Write) => PAGE_READWRITE,
-            (true, FileAccess::Read) => PAGE_EXECUTE_READ,
-            (true, FileAccess::Write) => PAGE_EXECUTE_READWRITE,
+        let access = match permissions {
+            FilePermissions::Read => PAGE_READONLY,
+            FilePermissions::Write => PAGE_READWRITE,
+            FilePermissions::Execute => PAGE_EXECUTE_READ,
         };
         let (size_hi, size_lo) = split_dword(size);
         let handle = CreateFileMappingW(
@@ -109,7 +105,7 @@ impl Mapping {
         let (offset_hi, offset_lo) = split_dword(view.offset);
         let addr = MapViewOfFileEx(
             self.handle,
-            view.protection.access_flags(),
+            view.permissions.access_flags(),
             offset_hi,
             offset_lo,
             view.length,

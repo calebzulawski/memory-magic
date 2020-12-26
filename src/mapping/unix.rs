@@ -22,43 +22,38 @@ fn open_anonymous(size: i64) -> Result<c_int, Error> {
     }
 }
 
-impl PageProtection {
+impl ViewPermissions {
     fn prot_flags(&self) -> ProtFlags {
-        let mut flags = match self.access {
-            PageAccess::Read => ProtFlags::PROT_READ,
-            PageAccess::Write | PageAccess::CopyOnWrite => {
-                ProtFlags::PROT_READ | ProtFlags::PROT_WRITE
-            }
-        };
-        if self.execute {
-            flags |= ProtFlags::PROT_EXEC;
+        match self {
+            Self::Read => ProtFlags::PROT_READ,
+            Self::Write | Self::CopyOnWrite => ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
+            Self::Execute => ProtFlags::PROT_READ | ProtFlags::PROT_EXEC,
         }
-        flags
     }
 
     fn map_flags(&self) -> MapFlags {
-        match self.access {
-            PageAccess::CopyOnWrite => MapFlags::MAP_PRIVATE,
+        match self {
+            Self::CopyOnWrite => MapFlags::MAP_PRIVATE,
             _ => MapFlags::MAP_SHARED,
         }
     }
 }
 
 #[derive(Debug)]
-pub struct Mapping {
+pub struct MappedObject {
     fd: c_int,
     executable: bool,
 }
 
-impl Drop for Mapping {
+impl Drop for MappedObject {
     fn drop(&mut self) {
         let _ = close(self.fd);
     }
 }
 
-impl Mapping {
+impl MappedObject {
     pub fn anonymous(size: usize, executable: bool) -> Result<Self, Error> {
-        Ok(Mapping {
+        Ok(MappedObject {
             fd: open_anonymous(size.try_into().unwrap())?,
             executable,
         })
@@ -67,25 +62,31 @@ impl Mapping {
     pub unsafe fn with_file(
         file: &std::fs::File,
         _size: u64,
-        options: &FileOptions,
+        permissions: FilePermissions,
     ) -> Result<Self, Error> {
         let file = file.try_clone()?;
-        let mapped = Mapping {
+        let mapped = MappedObject {
             fd: std::os::unix::io::IntoRawFd::into_raw_fd(file),
-            executable: options.execute,
+            executable: permissions == FilePermissions::Execute,
         };
 
-        // Check permissions:
+        // Check permissions for the "write" permission:
         // * The file must be opened read-write
         // * We cannot write to a file opened in append-mode with mmap
         let oflags =
             OFlag::from_bits(fcntl(mapped.fd, FcntlArg::F_GETFL).map_err(to_io_error)?).unwrap();
-        if options.access == FileAccess::Write
-            && (!oflags.contains(OFlag::O_RDWR) || oflags.contains(OFlag::O_APPEND))
-        {
-            Err(access_denied())
-        } else {
+        let permissions_match = match permissions {
+            FilePermissions::Read | FilePermissions::Execute => {
+                oflags.contains(OFlag::O_RDONLY) || oflags.contains(OFlag::O_RDWR)
+            }
+            FilePermissions::Write => {
+                oflags.contains(OFlag::O_RDWR) && !oflags.contains(OFlag::O_APPEND)
+            }
+        };
+        if permissions_match {
             Ok(mapped)
+        } else {
+            Err(access_denied())
         }
     }
 
@@ -93,8 +94,8 @@ impl Mapping {
         mmap(
             ptr as *mut _,
             view.length,
-            view.protection.prot_flags(),
-            view.protection.map_flags(),
+            view.permissions.prot_flags(),
+            view.permissions.map_flags(),
             self.fd,
             view.offset.try_into().unwrap(),
         )

@@ -7,31 +7,34 @@ use std::convert::TryInto;
 use std::io::Error;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub enum FileAccess {
+pub enum FilePermissions {
     Read,
     Write,
+    Execute,
 }
 
-#[derive(Copy, Clone, Debug)]
-pub struct FileOptions {
-    access: FileAccess,
-    execute: bool,
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum ViewPermissions {
+    Read,
+    Write,
+    CopyOnWrite,
+    Execute,
 }
 
 /// Shared memory
 #[derive(Debug)]
-pub struct Mapping {
-    inner: map_impl::Mapping,
+pub struct MappedObject {
+    inner: map_impl::MappedObject,
     size: u64,
 }
 
-impl Mapping {
+impl MappedObject {
     /// Create an anonymous shared memory of `size` bytes.
     ///
     /// This memory region is readable and writable.
     pub fn anonymous(size: usize) -> Result<Self, Error> {
         Ok(Self {
-            inner: map_impl::Mapping::anonymous(size, false)?,
+            inner: map_impl::MappedObject::anonymous(size, false)?,
             size: size.try_into().unwrap(),
         })
     }
@@ -41,16 +44,19 @@ impl Mapping {
     /// This memory region is readable, writable, and executable.
     pub fn anonymous_exec(size: usize) -> Result<Self, Error> {
         Ok(Self {
-            inner: map_impl::Mapping::anonymous(size, true)?,
+            inner: map_impl::MappedObject::anonymous(size, true)?,
             size: size.try_into().unwrap(),
         })
     }
 
     /// Map an existing file to memory.
-    pub unsafe fn with_file(file: &std::fs::File, options: &FileOptions) -> Result<Self, Error> {
+    pub unsafe fn with_file(
+        file: &std::fs::File,
+        permissions: FilePermissions,
+    ) -> Result<Self, Error> {
         let size = file.metadata()?.len();
         Ok(Self {
-            inner: map_impl::Mapping::with_file(file, size, options)?,
+            inner: map_impl::MappedObject::with_file(file, size, permissions)?,
             size,
         })
     }
@@ -136,41 +142,24 @@ impl Length {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq)]
-enum PageAccess {
-    Read,
-    Write,
-    CopyOnWrite,
-}
-
-#[derive(Copy, Clone, Debug)]
-struct PageProtection {
-    access: PageAccess,
-    execute: bool,
-}
-
 #[derive(Copy, Clone, Debug)]
 pub(crate) struct ViewOptions {
     offset: u64,
     length: usize,
-    protection: PageProtection,
+    permissions: ViewPermissions,
 }
 
 #[derive(Copy, Clone, Debug)]
 pub struct View<'a> {
     options: ViewOptions,
-    mapping: &'a map_impl::Mapping,
+    mapping: &'a map_impl::MappedObject,
 }
 
 impl View<'_> {
-    pub fn is_executable(&self) -> bool {
-        self.options.protection.execute
-    }
-
     pub fn is_mutable(&self) -> bool {
         std::matches!(
-            self.options.protection.access,
-            PageAccess::Write | PageAccess::CopyOnWrite
+            self.options.permissions,
+            ViewPermissions::Write | ViewPermissions::CopyOnWrite
         )
     }
 }
