@@ -7,10 +7,9 @@ use std::convert::TryInto;
 use std::io::Error;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub enum FilePermissions {
-    Read,
-    Write,
-    Execute,
+pub struct FilePermissions {
+    pub write: bool,
+    pub execute: bool,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]

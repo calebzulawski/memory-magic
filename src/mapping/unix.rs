@@ -67,7 +67,7 @@ impl MappedObject {
         let file = file.try_clone()?;
         let mapped = MappedObject {
             fd: std::os::unix::io::IntoRawFd::into_raw_fd(file),
-            executable: permissions == FilePermissions::Execute,
+            executable: permissions.execute,
         };
 
         // Check permissions for the "write" permission:
@@ -75,15 +75,12 @@ impl MappedObject {
         // * We cannot write to a file opened in append-mode with mmap
         let oflags =
             OFlag::from_bits(fcntl(mapped.fd, FcntlArg::F_GETFL).map_err(to_io_error)?).unwrap();
-        let permissions_match = match permissions {
-            FilePermissions::Read | FilePermissions::Execute => {
-                oflags.contains(OFlag::O_RDONLY) || oflags.contains(OFlag::O_RDWR)
-            }
-            FilePermissions::Write => {
-                oflags.contains(OFlag::O_RDWR) && !oflags.contains(OFlag::O_APPEND)
-            }
+        let opened_correctly = if permissions.write {
+            oflags.contains(OFlag::O_RDONLY) || oflags.contains(OFlag::O_RDWR)
+        } else {
+            oflags.contains(OFlag::O_RDWR) && !oflags.contains(OFlag::O_APPEND)
         };
-        if permissions_match {
+        if opened_correctly {
             Ok(mapped)
         } else {
             Err(access_denied())

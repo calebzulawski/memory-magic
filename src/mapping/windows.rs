@@ -80,10 +80,11 @@ impl MappedObject {
         size: u64,
         permissions: FilePermissions,
     ) -> Result<Self, Error> {
-        let access = match permissions {
-            FilePermissions::Read => PAGE_READONLY,
-            FilePermissions::Write => PAGE_READWRITE,
-            FilePermissions::Execute => PAGE_EXECUTE_READ,
+        let access = match (permissions.write, permissions.execute) {
+            (false, false) => PAGE_READONLY,
+            (true, false) => PAGE_READWRITE,
+            (false, true) => PAGE_EXECUTE_READ,
+            (true, true) => PAGE_EXECUTE_READWRITE,
         };
         let (size_hi, size_lo) = split_dword(size);
         let handle = CreateFileMappingW(
