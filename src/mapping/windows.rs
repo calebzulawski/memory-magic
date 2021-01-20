@@ -29,7 +29,7 @@ impl ViewPermissions {
 }
 
 #[derive(Debug)]
-pub struct MappedObject {
+pub struct Object {
     handle: HANDLE,
 }
 
@@ -50,7 +50,7 @@ where
     )
 }
 
-impl MappedObject {
+impl Object {
     pub fn anonymous(size: usize, executable: bool) -> Result<Self, Error> {
         let access = if executable {
             PAGE_EXECUTE_READWRITE | SEC_COMMIT
@@ -58,6 +58,8 @@ impl MappedObject {
             PAGE_READWRITE | SEC_COMMIT
         };
         let (size_hi, size_lo) = split_dword(size);
+        // Safety:
+        // Fulfills API expectations.
         let handle = unsafe {
             CreateFileMappingW(
                 INVALID_HANDLE_VALUE,
@@ -102,6 +104,8 @@ impl MappedObject {
         }
     }
 
+    // Must take care with the pointer provided.  The pointer must be null, or must point to a
+    // reserved virtual memory region that was previously allocated and freed.
     unsafe fn map_impl(&self, ptr: *mut u8, view: &ViewOptions) -> Result<*mut u8, Error> {
         let (offset_hi, offset_lo) = split_dword(view.offset);
         let addr = MapViewOfFileEx(
@@ -119,16 +123,18 @@ impl MappedObject {
         }
     }
 
-    unsafe fn map(&self, view: &ViewOptions) -> Result<*mut u8, Error> {
+    fn map(&self, view: &ViewOptions) -> Result<*mut u8, Error> {
         self.map_impl(std::ptr::null_mut(), view)
     }
 
-    unsafe fn map_hint(&self, ptr: *mut u8, view: &ViewOptions) -> Result<(), Error> {
+    fn map_hint(&self, ptr: *mut u8, view: &ViewOptions) -> Result<(), Error> {
         self.map_impl(ptr as *mut _, view).map(std::mem::drop)
     }
 }
 
 fn system_info() -> SYSTEM_INFO {
+    // Safety:
+    // system_info is always initialized by GetSystemInfo
     unsafe {
         let mut system_info = std::mem::MaybeUninit::<SYSTEM_INFO>::uninit();
         GetSystemInfo(system_info.as_mut_ptr());
@@ -144,68 +150,110 @@ pub fn length_granularity() -> usize {
     system_info().dwAllocationGranularity.try_into().unwrap()
 }
 
-pub fn allocate<'a>(views: &[View<'a>], mutable: bool) -> Result<*mut u8, Error> {
-    if mutable && !views.iter().all(|view| view.is_mutable()) {
-        return Err(access_denied());
+pub struct Map {
+    ptr: *mut u8,
+    len: usize,
+    views: Vec<*mut u8>,
+}
+
+impl Map {
+    pub fn map<'a>(view: &View<'a>, mutable: bool) -> Result<Self, Error> {
+        if mutable && !view.options.permissions.is_mutable() {
+            return Err(access_denied());
+        }
+
+        let ptr = view.mapping.map(&view.options)?;
+
+        Ok(Self {
+            ptr,
+            len: view.options.length,
+            views: Vec::new(),
+        })
     }
 
-    // Allocate mapping
-    let len = views.iter().fold(0usize, |len, view| {
-        len.checked_add(view.options.length).unwrap()
-    });
+    pub fn map_multiple<'a>(views: &[View<'a>], mutable: bool) -> Result<Self, Error> {
+        if mutable
+            && !views
+                .iter()
+                .all(|view| view.options.permissions.is_mutable())
+        {
+            return Err(access_denied());
+        }
 
-    let try_map = || {
-        let ptr = unsafe {
-            let ptr = VirtualAlloc(std::ptr::null_mut(), len, MEM_RESERVE, PAGE_NOACCESS);
-            if ptr.is_null() || VirtualFree(ptr, 0, MEM_RELEASE) == 0 {
-                return Err(Error::last_os_error());
+        // Allocate mapping
+        let len = map_length(views);
+        let try_map = || {
+            // Safety:
+            // Pointer is either an available memory region or null.
+            // `len` and `view_len` actually represents the mapped data to ensure safety.
+            let mut map = unsafe {
+                let ptr = VirtualAlloc(std::ptr::null_mut(), len, MEM_RESERVE, PAGE_NOACCESS);
+                if ptr.is_null() || VirtualFree(ptr, 0, MEM_RELEASE) == 0 {
+                    return Err(Error::last_os_error());
+                }
+                Self {
+                    ptr: ptr as *mut u8,
+                    len: 0,
+                    views: Vec::new(),
+                }
+            };
+
+            for view in views {
+                // Safety:
+                // The pointer is the next available memory region.
+                unsafe {
+                    let ptr = map.ptr().add(map.len);
+                    view.mapping
+                        .map_hint(map.ptr().add(map.len), &view.options)?;
+                    map.views.push(ptr);
+                }
+                map.len += view.options.length;
             }
-            ptr as *mut u8
+            Ok(map)
         };
 
-        let mut offset = 0;
-        for (i, view) in views.iter().enumerate() {
-            unsafe {
-                view.mapping
-                    .map_hint(ptr.add(offset), &view.options)
-                    .map_err(|e| {
-                        let _ = deallocate(ptr, views[..i].iter().map(|view| view.options.length));
-                        e
-                    })?;
-            }
-            offset += view.options.length;
-        }
-        Ok(ptr)
-    };
-
-    let mut tries = 0;
-    const MAX_TRIES: usize = 10;
-    loop {
-        tries += 1;
-        match try_map() {
-            Ok(ptr) => break Ok(ptr),
-            Err(err) => {
-                if tries == MAX_TRIES {
-                    break Err(err);
-                } else {
-                    continue;
+        let mut tries = 0;
+        const MAX_TRIES: usize = 10;
+        loop {
+            tries += 1;
+            match try_map() {
+                Ok(ptr) => break Ok(ptr),
+                Err(err) => {
+                    if tries == MAX_TRIES {
+                        break Err(err);
+                    } else {
+                        continue;
+                    }
                 }
             }
         }
     }
+
+    pub fn ptr(&self) -> *mut u8 {
+        self.ptr
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
 }
 
-pub unsafe fn deallocate(
-    map: *mut u8,
-    view_lengths: impl Iterator<Item = usize>,
-) -> Result<(), Error> {
-    let mut result = Ok(());
-    let mut offset = 0;
-    for length in view_lengths {
-        if UnmapViewOfFile(map.add(offset) as *const _) == 0 && result.is_ok() {
-            result = Err(Error::last_os_error());
+impl Drop for Map {
+    fn drop(&mut self) {
+        if self.views.is_empty() {
+            // Safety:
+            // There is only one view, at the contained pointer
+            unsafe {
+                UnmapViewOfFile(self.ptr() as *const _);
+            }
+        } else {
+            for ptr in self.views.iter().copied() {
+                // Safety:
+                // Each pointer is a pointer to a view
+                unsafe {
+                    UnmapViewOfFile(ptr as *const _);
+                }
+            }
         }
-        offset += length;
     }
-    result
 }

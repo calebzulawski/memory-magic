@@ -6,70 +6,181 @@ use once_cell::sync::OnceCell;
 use std::convert::TryInto;
 use std::io::Error;
 
+/// Permissions for file mapping.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct FilePermissions {
+    /// The file is writable.
     pub write: bool,
+    /// The file is executable.
     pub execute: bool,
 }
 
+/// Permissions for a particular view of an object.
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub enum ViewPermissions {
+pub enum ReadPermissions {
+    /// the view is read-only
     Read,
-    Write,
-    CopyOnWrite,
+    /// the view is readable and executable
     Execute,
 }
 
-/// Shared memory
-#[derive(Debug)]
-pub struct MappedObject {
-    inner: map_impl::MappedObject,
-    size: u64,
+/// Permissions for a particular mutable view of an object.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum WritePermissions {
+    /// the view is readable and writable
+    Write,
+    /// the view is readable and writable, but writes do not propagate to the backing object
+    CopyOnWrite,
 }
 
-impl MappedObject {
-    /// Create an anonymous shared memory of `size` bytes.
-    ///
-    /// This memory region is readable and writable.
-    pub fn anonymous(size: usize) -> Result<Self, Error> {
-        Ok(Self {
-            inner: map_impl::MappedObject::anonymous(size, false)?,
-            size: size.try_into().unwrap(),
-        })
-    }
+/// An object that can be mapped to virtual memory.
+#[derive(Debug)]
+pub struct Object {
+    inner: map_impl::Object,
+    size: u64,
+    write: bool,
+    execute: bool,
+}
 
+impl Object {
     /// Create an anonymous shared memory of `size` bytes.
     ///
-    /// This memory region is readable, writable, and executable.
-    pub fn anonymous_exec(size: usize) -> Result<Self, Error> {
+    /// This memory region is always writable.
+    pub fn anonymous(size: usize, permissions: ReadPermissions) -> Result<Self, Error> {
+        let execute = permissions == ReadPermissions::Execute;
         Ok(Self {
-            inner: map_impl::MappedObject::anonymous(size, true)?,
+            inner: map_impl::Object::anonymous(size, execute)?,
             size: size.try_into().unwrap(),
+            write: true,
+            execute,
         })
     }
 
     /// Map an existing file to memory.
-    pub unsafe fn with_file(
-        file: &std::fs::File,
-        permissions: FilePermissions,
-    ) -> Result<Self, Error> {
-        let size = file.metadata()?.len();
-        Ok(Self {
-            inner: map_impl::MappedObject::with_file(file, size, permissions)?,
+    ///
+    /// # Safety:
+    /// See [`FileOptions::new`].
+    pub unsafe fn with_file<'a>(file: &'a std::fs::File) -> FileOptions<'a> {
+        FileOptions::new(file)
+    }
+
+    /// Create a view of the mapped object.
+    ///
+    /// Returns `None` if the requested permissions are not allowed for this object.
+    pub fn view<'a>(
+        &'a self,
+        offset: Offset,
+        length: Length,
+        permissions: ReadPermissions,
+    ) -> Option<View<'a>> {
+        let execute = permissions == ReadPermissions::Execute;
+        if !execute || execute && self.execute {
+            Some(View {
+                offset,
+                length,
+                execute,
+                object: &self.inner,
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Create a mutable view of the mapped object.
+    ///
+    /// Returns `None` if the requested permissions are not allowed for this object.
+    pub fn view_mut<'a>(
+        &'a self,
+        offset: Offset,
+        length: Length,
+        permissions: WritePermissions,
+    ) -> Option<ViewMut<'a>> {
+        let copy_on_write = permissions == WritePermissions::CopyOnWrite;
+        if copy_on_write || self.write {
+            Some(ViewMut {
+                offset,
+                length,
+                copy_on_write,
+                object: &self.inner,
+            })
+        } else {
+            None
+        }
+    }
+}
+
+/// Options for opening a file mapping.
+pub struct FileOptions<'a> {
+    file: &'a std::fs::File,
+    write: bool,
+    execute: bool,
+}
+
+impl<'a> FileOptions<'a> {
+    /// Create a new set of options for opening a file mapping.
+    ///
+    /// All options are initially set to `false`.
+    ///
+    /// # Safety
+    /// Using this function means you are guaranteeing that the file will never be truncated or
+    /// modified external to this file mapping.
+    /// In most cases it's impossible to actually guarantee a file will never be modified.
+    /// For example, on Linux a pathological program can open the file the instant it is created,
+    /// and truncate or modify the file after it's mapped to memory.
+    /// If the file is truncated, it can result in SIGBUS.
+    /// If it's modified, it can lead to undefined behavior.
+    ///
+    /// Using this function indicates that you are aware of the risks and can reasonably assume the
+    /// file is safe to map.
+    pub unsafe fn new(file: &'a std::fs::File) -> Self {
+        Self {
+            file,
+            write: false,
+            execute: false,
+        }
+    }
+
+    /// Make the file mapping writable.
+    pub fn write(&mut self, write: bool) -> &mut Self {
+        self.write = write;
+        self
+    }
+
+    /// Make the file mapping executable.
+    pub fn execute(&mut self, execute: bool) -> &mut Self {
+        self.execute = execute;
+        self
+    }
+
+    /// Open a mapping object with the specified options.
+    pub fn finish(&self) -> Result<Object, Error> {
+        let size = self.file.metadata()?.len();
+        // Safety: unsafe is pushed off to `new`
+        let inner =
+            unsafe { map_impl::Object::with_file(self.file, size, self.write, self.execute)? };
+        Ok(Object {
+            inner,
             size,
+            write: self.write,
+            execute: self.execute,
         })
     }
 }
 
+/// An offset into an object where a view may begin.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Offset(u64);
 
 impl Offset {
+    /// Offsets must be a multiple of this value.
     pub fn granularity() -> u64 {
         static GRANULARITY: OnceCell<u64> = OnceCell::new();
-        *GRANULARITY.get_or_init(|| map_impl::offset_granularity())
+        *GRANULARITY.get_or_init(map_impl::offset_granularity)
     }
 
+    /// Create an offset with the specified value.
+    ///
+    /// If the value is not a multiple of [`granularity`](`Self::granularity`), returns `None`.
     pub fn exact(value: u64) -> Option<Self> {
         assert!(value != 0, "length must not be zero");
         if value % Self::granularity() == 0 {
@@ -79,6 +190,7 @@ impl Offset {
         }
     }
 
+    /// Create an offset, rounded up to the next possible value.
     pub fn round_up(value: u64) -> Self {
         assert!(value != 0, "length must not be zero");
         Self::exact(
@@ -88,11 +200,13 @@ impl Offset {
         .unwrap()
     }
 
+    /// Create an offset, rounded down to the next possible value.
     pub fn round_down(value: u64) -> Self {
         assert!(value != 0, "length must not be zero");
         Self::exact(value / Self::granularity() * Self::granularity()).unwrap()
     }
 
+    /// Get the offset value.
     pub fn to_u64(self) -> u64 {
         self.0
     }
@@ -104,15 +218,20 @@ impl std::convert::From<Offset> for u64 {
     }
 }
 
+/// A length of a view into an object.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Length(usize);
 
 impl Length {
+    /// Lengths must be a multiple of this value.
     pub fn granularity() -> usize {
         static GRANULARITY: OnceCell<usize> = OnceCell::new();
-        *GRANULARITY.get_or_init(|| map_impl::length_granularity())
+        *GRANULARITY.get_or_init(map_impl::length_granularity)
     }
 
+    /// Create a length with the specified value.
+    ///
+    /// If the value is not a multiple of [`granularity`](`Self::granularity`), returns `None`.
     pub fn exact(value: usize) -> Option<Self> {
         assert!(value != 0, "length must not be zero");
         if value % Self::granularity() == 0 {
@@ -122,6 +241,7 @@ impl Length {
         }
     }
 
+    /// Create a length, rounded up to the next possible value.
     pub fn round_up(value: usize) -> Self {
         assert!(value != 0, "length must not be zero");
         Self::exact(
@@ -131,66 +251,70 @@ impl Length {
         .unwrap()
     }
 
+    /// Create a length, rounded down to the next possible value.
     pub fn round_down(value: usize) -> Self {
         assert!(value != 0, "length must not be zero");
         Self::exact(value / Self::granularity() * Self::granularity()).unwrap()
     }
 
+    /// Get the length value.
     pub fn to_usize(self) -> usize {
         self.0
     }
 }
 
-#[derive(Copy, Clone, Debug)]
-pub(crate) struct ViewOptions {
-    offset: u64,
-    length: usize,
-    permissions: ViewPermissions,
-}
-
+/// A view of an object.
 #[derive(Copy, Clone, Debug)]
 pub struct View<'a> {
-    options: ViewOptions,
-    mapping: &'a map_impl::MappedObject,
+    offset: Offset,
+    length: Length,
+    execute: bool,
+    object: &'a map_impl::Object,
 }
 
-impl View<'_> {
-    pub fn is_mutable(&self) -> bool {
-        std::matches!(
-            self.options.permissions,
-            ViewPermissions::Write | ViewPermissions::CopyOnWrite
-        )
-    }
+/// A view of an object.
+#[derive(Copy, Clone, Debug)]
+pub struct ViewMut<'a> {
+    offset: Offset,
+    length: Length,
+    copy_on_write: bool,
+    object: &'a map_impl::Object,
 }
 
-pub mod alloc {
-    use super::*;
+/// Map a view of an object to memory.
+///
+/// Returns a tuple containing the memory map and the size of the map.
+pub fn map(view: &View<'_>) -> Result<(*const u8, usize), Error> {
+    map_impl::map(view)
+}
 
-    pub fn map_length<'a>(views: &[View<'a>]) -> usize {
-        views.iter().fold(0usize, |len, view| {
-            len.checked_add(view.options.length).unwrap()
-        })
-    }
+/// Map a mutable view of an object to memory.
+///
+/// Returns a tuple containing the memory map and the size of the map.
+pub fn map_mut(view: &ViewMut<'_>) -> Result<(*mut u8, usize), Error> {
+    map_impl::map_mut(view)
+}
 
-    pub fn allocate<'a>(views: &[View<'a>]) -> Result<*const u8, Error> {
-        map_impl::allocate(views, false).map(|x| x as *const u8)
-    }
+/// Map views of objects contiguously to memory.
+///
+/// Returns a tuple containing the memory map and the size of the map.
+pub fn map_multiple(views: &[View<'_>]) -> Result<(*const u8, usize), Error> {
+    map_impl::map_multiple(views)
+}
 
-    pub fn allocate_mut<'a>(views: &[View<'a>]) -> Result<*mut u8, Error> {
-        map_impl::allocate(views, true)
-    }
+/// Map mutable views of objects contiguously to memory.
+///
+/// Returns a tuple containing the memory map and the size of the map.
+pub fn map_multiple_mut(views: &[ViewMut<'_>]) -> Result<(*mut u8, usize), Error> {
+    map_impl::map_multiple_mut(views)
+}
 
-    pub unsafe fn deallocate(
-        map: *const u8,
-        view_lengths: impl Iterator<Item = usize>,
-    ) -> Result<(), Error> {
-        map_impl::deallocate(map as *mut u8, view_lengths)
-    }
-
-    pub unsafe fn deallocate_mut(
-        map: *mut u8,
-        view_lengths: impl Iterator<Item = usize>,
-    ) -> Result<(), Error> {
-        map_impl::deallocate(map, view_lengths)
-    }
+/// Unmap a memory map.
+///
+/// # Safety
+/// * `ptr` must be a memory map allocated with one of [`map`], [`map_mut`], [`map_multiple`], or
+/// [`map_multiple_mut`].
+/// * `view_lengths` must produce the lengths of each view in the memory map.
+pub unsafe fn unmap(ptr: *mut u8, view_lengths: impl Iterator<Item = usize>) -> Result<(), Error> {
+    map_impl::unmap(ptr, view_lengths)
 }
