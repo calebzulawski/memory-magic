@@ -1,5 +1,4 @@
 use super::*;
-use crate::error::{access_denied, to_io_error};
 use nix::{
     fcntl::{fcntl, FcntlArg, OFlag},
     libc::c_int,
@@ -8,6 +7,20 @@ use nix::{
 };
 use std::convert::TryInto;
 use std::io::Error;
+
+fn access_denied() -> std::io::Error {
+    std::io::Error::from_raw_os_error(nix::libc::EACCES)
+}
+
+fn to_io_error(error: nix::Error) -> std::io::Error {
+    if let Some(errno) = error.as_errno() {
+        if errno != nix::errno::Errno::UnknownErrno {
+            let value: i32 = unsafe { std::mem::transmute(errno) };
+            return std::io::Error::from_raw_os_error(value);
+        }
+    }
+    std::io::Error::new(std::io::ErrorKind::Other, error)
+}
 
 fn open_anonymous(size: i64) -> Result<c_int, Error> {
     let fd = shm_open_anonymous::shm_open_anonymous();
@@ -142,7 +155,7 @@ unsafe fn map_impl<T: ViewImpl>(ptr: *mut u8, view: &T) -> Result<*mut u8, Error
         view.offset().0.try_into().unwrap(),
     )
     .map(|x| x as *mut u8)
-    .map_err(crate::error::to_io_error)
+    .map_err(to_io_error)
 }
 
 fn map_multiple_impl<T: ViewImpl>(views: &[T]) -> Result<(*mut u8, usize), Error> {
@@ -164,9 +177,8 @@ fn map_multiple_impl<T: ViewImpl>(views: &[T]) -> Result<(*mut u8, usize), Error
             )
         };
         // close fd unconditionally before checking error
-        close(fd).map_err(crate::error::to_io_error)?;
-        ptr.map(|ptr| ptr as *mut u8)
-            .map_err(crate::error::to_io_error)
+        close(fd).map_err(to_io_error)?;
+        ptr.map(|ptr| ptr as *mut u8).map_err(to_io_error)
     }?;
 
     let mut offset = 0;
@@ -204,8 +216,8 @@ pub fn map_multiple_mut(views: &[ViewMut<'_>]) -> Result<(*mut u8, usize), Error
     map_multiple_impl(views)
 }
 
-pub unsafe fn unmap(ptr: *mut u8, view_lengths: impl Iterator<Item = usize>) -> Result<(), Error> {
-    munmap(ptr as *mut _, view_lengths.sum()).map_err(crate::error::to_io_error)
+pub unsafe fn unmap(ptr: *mut u8, view_lengths: impl Iterator<Item = usize>) {
+    munmap(ptr as *mut _, view_lengths.sum()).unwrap();
 }
 
 fn page_size() -> u64 {

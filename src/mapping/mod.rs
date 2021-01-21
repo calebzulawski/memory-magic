@@ -315,6 +315,6 @@ pub fn map_multiple_mut(views: &[ViewMut<'_>]) -> Result<(*mut u8, usize), Error
 /// * `ptr` must be a memory map allocated with one of [`map`], [`map_mut`], [`map_multiple`], or
 /// [`map_multiple_mut`].
 /// * `view_lengths` must produce the lengths of each view in the memory map.
-pub unsafe fn unmap(ptr: *mut u8, view_lengths: impl Iterator<Item = usize>) -> Result<(), Error> {
+pub unsafe fn unmap(ptr: *mut u8, view_lengths: impl Iterator<Item = usize>) {
     map_impl::unmap(ptr, view_lengths)
 }
