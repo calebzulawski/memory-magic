@@ -1,4 +1,4 @@
-use super::*;
+use crate::view::{Length, Offset, View, ViewMut};
 use nix::{
     fcntl::{fcntl, FcntlArg, OFlag},
     libc::c_int,
@@ -148,11 +148,11 @@ impl Object {
 unsafe fn map_impl<T: ViewImpl>(ptr: *mut u8, view: &T) -> Result<*mut u8, Error> {
     mmap(
         ptr as *mut _,
-        view.length().0,
+        view.length().into(),
         view.prot_flags(),
         view.map_flags(),
         view.object().fd,
-        view.offset().0.try_into().unwrap(),
+        u64::from(view.offset()).try_into().unwrap(),
     )
     .map(|x| x as *mut u8)
     .map_err(to_io_error)
@@ -162,7 +162,7 @@ fn map_multiple_impl<T: ViewImpl>(views: &[T]) -> Result<(*mut u8, usize), Error
     // Allocate mapping
     let len = views
         .into_iter()
-        .fold(0, |length, view| length + view.length().0);
+        .fold(0, |length, view| length + usize::from(view.length()));
     let ptr = {
         let fd = open_anonymous(len.try_into().unwrap())?;
         // Safety: pointer is selected by kernel
@@ -187,7 +187,7 @@ fn map_multiple_impl<T: ViewImpl>(views: &[T]) -> Result<(*mut u8, usize), Error
         unsafe {
             map_impl(ptr.add(offset), view)?;
         }
-        offset += view.length().0;
+        offset += usize::from(view.length());
     }
     Ok((ptr, len))
 }
@@ -196,7 +196,7 @@ pub fn map(view: &View<'_>) -> Result<(*const u8, usize), Error> {
     Ok((
         // Safety: the pointer is selected by the kernel.
         unsafe { map_impl(std::ptr::null_mut(), view)? as *const u8 },
-        view.length.0,
+        view.length().into(),
     ))
 }
 
@@ -204,7 +204,7 @@ pub fn map_mut(view: &ViewMut<'_>) -> Result<(*mut u8, usize), Error> {
     Ok((
         // Safety: the pointer is selected by the kernel.
         unsafe { map_impl(std::ptr::null_mut(), view)? },
-        view.length.0,
+        view.length().into(),
     ))
 }
 

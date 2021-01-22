@@ -1,7 +1,6 @@
-#[cfg_attr(unix, path = "unix.rs")]
-#[cfg_attr(windows, path = "windows.rs")]
-mod map_impl;
+//! Views of objects mapped to shared memory.
 
+use crate::map_impl;
 use once_cell::sync::OnceCell;
 use std::convert::TryInto;
 use std::io::Error;
@@ -263,58 +262,26 @@ impl Length {
     }
 }
 
+impl std::convert::From<Length> for usize {
+    fn from(value: Length) -> Self {
+        value.0
+    }
+}
+
 /// A view of an object.
 #[derive(Copy, Clone, Debug)]
 pub struct View<'a> {
-    offset: Offset,
-    length: Length,
-    execute: bool,
-    object: &'a map_impl::Object,
+    pub(crate) offset: Offset,
+    pub(crate) length: Length,
+    pub(crate) execute: bool,
+    pub(crate) object: &'a map_impl::Object,
 }
 
-/// A view of an object.
+/// A mutable view of an object.
 #[derive(Copy, Clone, Debug)]
 pub struct ViewMut<'a> {
-    offset: Offset,
-    length: Length,
-    copy_on_write: bool,
-    object: &'a map_impl::Object,
-}
-
-/// Map a view of an object to memory.
-///
-/// Returns a tuple containing the memory map and the size of the map.
-pub fn map(view: &View<'_>) -> Result<(*const u8, usize), Error> {
-    map_impl::map(view)
-}
-
-/// Map a mutable view of an object to memory.
-///
-/// Returns a tuple containing the memory map and the size of the map.
-pub fn map_mut(view: &ViewMut<'_>) -> Result<(*mut u8, usize), Error> {
-    map_impl::map_mut(view)
-}
-
-/// Map views of objects contiguously to memory.
-///
-/// Returns a tuple containing the memory map and the size of the map.
-pub fn map_multiple(views: &[View<'_>]) -> Result<(*const u8, usize), Error> {
-    map_impl::map_multiple(views)
-}
-
-/// Map mutable views of objects contiguously to memory.
-///
-/// Returns a tuple containing the memory map and the size of the map.
-pub fn map_multiple_mut(views: &[ViewMut<'_>]) -> Result<(*mut u8, usize), Error> {
-    map_impl::map_multiple_mut(views)
-}
-
-/// Unmap a memory map.
-///
-/// # Safety
-/// * `ptr` must be a memory map allocated with one of [`map`], [`map_mut`], [`map_multiple`], or
-/// [`map_multiple_mut`].
-/// * `view_lengths` must produce the lengths of each view in the memory map.
-pub unsafe fn unmap(ptr: *mut u8, view_lengths: impl Iterator<Item = usize>) {
-    map_impl::unmap(ptr, view_lengths)
+    pub(crate) offset: Offset,
+    pub(crate) length: Length,
+    pub(crate) copy_on_write: bool,
+    pub(crate) object: &'a map_impl::Object,
 }

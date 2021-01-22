@@ -1,5 +1,6 @@
-use super::*;
+use crate::view::{Length, Offset, View, ViewMut};
 use std::convert::TryInto;
+use std::io::Error;
 use winapi::{
     shared::minwindef::DWORD,
     um::{
@@ -166,13 +167,13 @@ pub fn length_granularity() -> usize {
 // Must take care with the pointer provided.  The pointer must be null, or must point to a
 // reserved virtual memory region that was previously allocated and freed.
 unsafe fn map_impl<T: ViewImpl>(ptr: *mut u8, view: &T) -> Result<*mut u8, Error> {
-    let (offset_hi, offset_lo) = split_dword(view.offset().0);
+    let (offset_hi, offset_lo) = split_dword(u64::from(view.offset()));
     let addr = MapViewOfFileEx(
         view.object().handle,
         view.access_flags(),
         offset_hi,
         offset_lo,
-        view.length().0,
+        view.length().into(),
         ptr as *mut _,
     );
     if addr.is_null() {
@@ -186,7 +187,7 @@ fn map_multiple_impl<T: ViewImpl>(views: &[T]) -> Result<(*mut u8, usize), Error
     // Allocate mapping
     let len = views
         .into_iter()
-        .fold(0, |length, view| length + view.length().0);
+        .fold(0, |length, view| length + usize::from(view.length()));
     let try_map = || {
         // Safety:
         // Pointer is either an available memory region or null. We only deallocate memory
@@ -205,11 +206,11 @@ fn map_multiple_impl<T: ViewImpl>(views: &[T]) -> Result<(*mut u8, usize), Error
             // The pointer is the next available memory region.
             unsafe {
                 if let Err(err) = map_impl(ptr.add(offset), view) {
-                    unmap(ptr, views[..i].iter().map(|v| v.length().0));
+                    unmap(ptr, views[..i].iter().map(|v| v.length().into()));
                     return Err(err);
                 }
             }
-            offset += view.length().0;
+            offset += usize::from(view.length());
         }
         Ok(ptr)
     };
@@ -235,7 +236,7 @@ pub fn map(view: &View<'_>) -> Result<(*const u8, usize), Error> {
     Ok((
         // Safety: the pointer is selected by the kernel.
         unsafe { map_impl(std::ptr::null_mut(), view)? as *const u8 },
-        view.length.0,
+        view.length.into(),
     ))
 }
 
@@ -243,7 +244,7 @@ pub fn map_mut(view: &ViewMut<'_>) -> Result<(*mut u8, usize), Error> {
     Ok((
         // Safety: the pointer is selected by the kernel.
         unsafe { map_impl(std::ptr::null_mut(), view)? },
-        view.length.0,
+        view.length.into(),
     ))
 }
 
