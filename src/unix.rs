@@ -161,7 +161,7 @@ unsafe fn map_impl<T: ViewImpl>(ptr: *mut u8, view: &T) -> Result<*mut u8, Error
 fn map_multiple_impl<T: ViewImpl>(views: &[T]) -> Result<(*mut u8, usize), Error> {
     // Allocate mapping
     let len = views
-        .into_iter()
+        .iter()
         .fold(0, |length, view| length + usize::from(view.length()));
     let ptr = {
         let fd = open_anonymous(len.try_into().unwrap())?;

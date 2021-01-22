@@ -57,23 +57,23 @@ impl Object {
 
     /// Map an existing file to memory.
     ///
-    /// # Safety:
+    /// # Safety
     /// See [`FileOptions::new`].
-    pub unsafe fn with_file<'a>(file: &'a std::fs::File) -> FileOptions<'a> {
+    pub unsafe fn with_file(file: &std::fs::File) -> FileOptions<'_> {
         FileOptions::new(file)
     }
 
     /// Create a view of the mapped object.
     ///
     /// Returns `None` if the requested permissions are not allowed for this object.
-    pub fn view<'a>(
-        &'a self,
+    pub fn view(
+        &self,
         offset: Offset,
         length: Length,
         permissions: ReadPermissions,
-    ) -> Option<View<'a>> {
+    ) -> Option<View<'_>> {
         let execute = permissions == ReadPermissions::Execute;
-        if !execute || execute && self.execute {
+        if !execute || self.execute {
             Some(View {
                 offset,
                 length,
@@ -88,12 +88,12 @@ impl Object {
     /// Create a mutable view of the mapped object.
     ///
     /// Returns `None` if the requested permissions are not allowed for this object.
-    pub fn view_mut<'a>(
-        &'a self,
+    pub fn view_mut(
+        &self,
         offset: Offset,
         length: Length,
         permissions: WritePermissions,
-    ) -> Option<ViewMut<'a>> {
+    ) -> Option<ViewMut<'_>> {
         let copy_on_write = permissions == WritePermissions::CopyOnWrite;
         if copy_on_write || self.write {
             Some(ViewMut {

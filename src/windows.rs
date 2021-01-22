@@ -83,7 +83,7 @@ where
     (
         value
             .checked_shr(std::mem::size_of::<DWORD>() as DWORD * 8)
-            .unwrap_or(T::zero())
+            .unwrap_or_else(T::zero)
             .try_into()
             .unwrap(),
         (value & DWORD::MAX.try_into().unwrap()).try_into().unwrap(),
@@ -111,7 +111,7 @@ impl Object {
             )
         };
         if handle == INVALID_HANDLE_VALUE {
-            Err(std::io::Error::last_os_error().into())
+            Err(std::io::Error::last_os_error())
         } else {
             Ok(Self { handle })
         }
@@ -139,7 +139,7 @@ impl Object {
             std::ptr::null_mut(),
         );
         if handle == INVALID_HANDLE_VALUE {
-            Err(std::io::Error::last_os_error().into())
+            Err(std::io::Error::last_os_error())
         } else {
             Ok(Self { handle })
         }
@@ -186,7 +186,7 @@ unsafe fn map_impl<T: ViewImpl>(ptr: *mut u8, view: &T) -> Result<*mut u8, Error
 fn map_multiple_impl<T: ViewImpl>(views: &[T]) -> Result<(*mut u8, usize), Error> {
     // Allocate mapping
     let len = views
-        .into_iter()
+        .iter()
         .fold(0, |length, view| length + usize::from(view.length()));
     let try_map = || {
         // Safety:
