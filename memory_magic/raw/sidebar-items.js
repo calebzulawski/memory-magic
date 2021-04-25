@@ -1,0 +1,1 @@
+initSidebarItems({"fn":[["map","Map a view of an object to memory."],["map_multiple","Map views of objects contiguously to memory."],["map_multiple_mut","Map mutable views of objects contiguously to memory."],["map_mut","Map a mutable view of an object to memory."],["unmap","Unmap a memory map."]]});
