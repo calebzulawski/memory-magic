@@ -1,0 +1,55 @@
+name: Build
+
+on: [push]
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        version:
+          - 1.45.0
+          - stable
+          - beta
+          - nightly
+        os:
+          - macos-latest
+          - ubuntu-latest
+          - windows-latest
+
+    runs-on: ${{ matrix.os }}
+    
+    steps:
+    - uses: actions/checkout@v1
+    - name: Install toolchain
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: ${{ matrix.version }}
+        override: true
+        profile: minimal
+    - name: Run tests
+      shell: bash
+      run: cargo test --verbose
+
+  lint:
+    strategy:
+      matrix:
+        version:
+          - nightly
+        os:
+          - macos-latest
+          - ubuntu-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+    - uses: actions/checkout@v1
+    - name: Install toolchain
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        override: true
+        profile: minimal
+        components: clippy, rustfmt
+    - name: Clippy lint
+      run: cargo clippy --all-targets -- -D warnings
+    - name: Check formatting
+      run: cargo fmt -- --check
