@@ -1,9 +1,9 @@
 //! Views of objects mapped to shared memory.
 
 use crate::map_impl;
-use once_cell::sync::OnceCell;
-use std::convert::TryInto;
-use std::io::Error;
+use crate::Error;
+use core::convert::TryInto;
+use once_cell::race::OnceNonZeroUsize;
 
 /// Permissions for file mapping.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -59,6 +59,7 @@ impl Object {
     ///
     /// # Safety
     /// See [`FileOptions::new`].
+    #[cfg(feature = "std")]
     pub unsafe fn with_file(file: &std::fs::File) -> FileOptions<'_> {
         FileOptions::new(file)
     }
@@ -109,12 +110,14 @@ impl Object {
 }
 
 /// Options for opening a file mapping.
+#[cfg(feature = "std")]
 pub struct FileOptions<'a> {
     file: &'a std::fs::File,
     write: bool,
     execute: bool,
 }
 
+#[cfg(feature = "std")]
 impl<'a> FileOptions<'a> {
     /// Create a new set of options for opening a file mapping.
     ///
@@ -153,7 +156,11 @@ impl<'a> FileOptions<'a> {
 
     /// Open a mapping object with the specified options.
     pub fn finish(&self) -> Result<Object, Error> {
-        let size = self.file.metadata()?.len();
+        let size = self
+            .file
+            .metadata()
+            .map_err(|e| Error(e.raw_os_error().unwrap_or(0)))?
+            .len();
         // Safety: unsafe is pushed off to `new`
         let inner =
             unsafe { map_impl::Object::with_file(self.file, size, self.write, self.execute)? };
@@ -173,8 +180,8 @@ pub struct Offset(u64);
 impl Offset {
     /// Offsets must be a multiple of this value.
     pub fn granularity() -> u64 {
-        static GRANULARITY: OnceCell<u64> = OnceCell::new();
-        *GRANULARITY.get_or_init(map_impl::offset_granularity)
+        static GRANULARITY: OnceNonZeroUsize = OnceNonZeroUsize::new();
+        GRANULARITY.get_or_init(map_impl::offset_granularity).get() as u64
     }
 
     /// Create an offset with the specified value.
@@ -211,7 +218,7 @@ impl Offset {
     }
 }
 
-impl std::convert::From<Offset> for u64 {
+impl core::convert::From<Offset> for u64 {
     fn from(value: Offset) -> Self {
         value.0
     }
@@ -224,8 +231,8 @@ pub struct Length(usize);
 impl Length {
     /// Lengths must be a multiple of this value.
     pub fn granularity() -> usize {
-        static GRANULARITY: OnceCell<usize> = OnceCell::new();
-        *GRANULARITY.get_or_init(map_impl::length_granularity)
+        static GRANULARITY: OnceNonZeroUsize = OnceNonZeroUsize::new();
+        GRANULARITY.get_or_init(map_impl::length_granularity).get()
     }
 
     /// Create a length with the specified value.
@@ -262,7 +269,7 @@ impl Length {
     }
 }
 
-impl std::convert::From<Length> for usize {
+impl core::convert::From<Length> for usize {
     fn from(value: Length) -> Self {
         value.0
     }

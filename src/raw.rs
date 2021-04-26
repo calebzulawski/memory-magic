@@ -2,7 +2,7 @@
 
 use crate::map_impl;
 use crate::view::{View, ViewMut};
-use std::io::Error;
+use crate::Error;
 
 /// Map a view of an object to memory.
 ///

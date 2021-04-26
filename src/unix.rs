@@ -1,45 +1,54 @@
-use crate::view::{Length, Offset, View, ViewMut};
-use nix::{
-    fcntl::{fcntl, FcntlArg, OFlag},
-    libc::c_int,
-    sys::mman::{mmap, munmap, MapFlags, ProtFlags},
-    unistd::{close, ftruncate, sysconf, SysconfVar},
+use crate::{
+    view::{Length, Offset, View, ViewMut},
+    Error,
 };
-use std::convert::TryInto;
-use std::io::Error;
+use core::{convert::TryInto, num::NonZeroUsize};
 
-fn access_denied() -> std::io::Error {
-    std::io::Error::from_raw_os_error(nix::libc::EACCES)
+fn errno() -> libc::c_int {
+    #[cfg(any(target_os = "solaris", target_os = "illumos"))]
+    use libc::___errno as errno_location;
+    #[cfg(any(target_os = "android", target_os = "netbsd", target_os = "openbsd"))]
+    use libc::__errno as errno_location;
+    #[cfg(any(target_os = "linux", target_os = "redox", target_os = "dragonfly"))]
+    use libc::__errno_location as errno_location;
+    #[cfg(any(target_os = "freebsd", target_os = "ios", target_os = "macos"))]
+    use libc::__error as errno_location;
+
+    unsafe { *errno_location() as libc::c_int }
 }
 
-fn to_io_error(error: nix::Error) -> std::io::Error {
-    if let Some(errno) = error.as_errno() {
-        if errno != nix::errno::Errno::UnknownErrno {
-            let value: i32 = unsafe { std::mem::transmute(errno) };
-            return std::io::Error::from_raw_os_error(value);
-        }
-    }
-    std::io::Error::new(std::io::ErrorKind::Other, error)
+fn last_error() -> Error {
+    Error(errno() as i32)
 }
 
-fn open_anonymous(size: i64) -> Result<c_int, Error> {
+#[cfg(feature = "std")]
+fn access_denied() -> Error {
+    Error(libc::EACCES)
+}
+
+fn open_anonymous(size: i64) -> Result<libc::c_int, Error> {
     let fd = shm_open_anonymous::shm_open_anonymous();
     if fd == -1 {
-        Err(Error::last_os_error())
+        Err(last_error())
     } else {
-        ftruncate(fd, size).map_err(|e| {
-            let _ = close(fd);
-            to_io_error(e)
-        })?;
-        Ok(fd)
+        // Safety: fd is valid
+        unsafe {
+            if libc::ftruncate(fd, size) != 0 {
+                let err = last_error();
+                libc::close(fd);
+                Err(err)
+            } else {
+                Ok(fd)
+            }
+        }
     }
 }
 
 trait ViewImpl {
     fn offset(&self) -> Offset;
     fn length(&self) -> Length;
-    fn prot_flags(&self) -> ProtFlags;
-    fn map_flags(&self) -> MapFlags;
+    fn prot_flags(&self) -> libc::c_int;
+    fn map_flags(&self) -> libc::c_int;
     fn object(&self) -> &Object;
 }
 
@@ -52,16 +61,16 @@ impl<'a> ViewImpl for View<'a> {
         self.length
     }
 
-    fn prot_flags(&self) -> ProtFlags {
-        let mut prot_flags = ProtFlags::PROT_READ;
+    fn prot_flags(&self) -> libc::c_int {
+        let mut prot_flags = libc::PROT_READ;
         if self.execute {
-            prot_flags |= ProtFlags::PROT_EXEC;
+            prot_flags |= libc::PROT_EXEC;
         }
         prot_flags
     }
 
-    fn map_flags(&self) -> MapFlags {
-        MapFlags::MAP_SHARED
+    fn map_flags(&self) -> libc::c_int {
+        libc::MAP_SHARED
     }
 
     fn object(&self) -> &Object {
@@ -78,15 +87,15 @@ impl<'a> ViewImpl for ViewMut<'a> {
         self.length
     }
 
-    fn prot_flags(&self) -> ProtFlags {
-        ProtFlags::PROT_READ | ProtFlags::PROT_WRITE
+    fn prot_flags(&self) -> libc::c_int {
+        libc::PROT_READ | libc::PROT_WRITE
     }
 
-    fn map_flags(&self) -> MapFlags {
+    fn map_flags(&self) -> libc::c_int {
         if self.copy_on_write {
-            MapFlags::MAP_PRIVATE
+            libc::MAP_PRIVATE
         } else {
-            MapFlags::MAP_SHARED
+            libc::MAP_SHARED
         }
     }
 
@@ -97,13 +106,16 @@ impl<'a> ViewImpl for ViewMut<'a> {
 
 #[derive(Debug)]
 pub struct Object {
-    fd: c_int,
+    fd: libc::c_int,
     execute: bool,
 }
 
 impl Drop for Object {
     fn drop(&mut self) {
-        let _ = close(self.fd);
+        // Safety: fd is valid
+        unsafe {
+            libc::close(self.fd);
+        }
     }
 }
 
@@ -115,13 +127,16 @@ impl Object {
         })
     }
 
+    #[cfg(feature = "std")]
     pub unsafe fn with_file(
         file: &std::fs::File,
         _size: u64,
         write: bool,
         execute: bool,
     ) -> Result<Self, Error> {
-        let file = file.try_clone()?;
+        let file = file
+            .try_clone()
+            .map_err(|e| Error(e.raw_os_error().unwrap_or(0)))?;
         let mapped = Object {
             fd: std::os::unix::io::IntoRawFd::into_raw_fd(file),
             execute,
@@ -130,12 +145,14 @@ impl Object {
         // Check permissions for the "write" permission:
         // * The file must be opened read-write
         // * We cannot write to a file opened in append-mode with mmap
-        let oflags =
-            OFlag::from_bits(fcntl(mapped.fd, FcntlArg::F_GETFL).map_err(to_io_error)?).unwrap();
+        let oflags = libc::fcntl(mapped.fd, libc::F_GETFL);
+        if oflags == -1 {
+            return Err(last_error());
+        }
         let opened_correctly = if write {
-            oflags.contains(OFlag::O_RDONLY) || oflags.contains(OFlag::O_RDWR)
+            oflags == libc::O_RDONLY || oflags & libc::O_RDWR != 0
         } else {
-            oflags.contains(OFlag::O_RDWR) && !oflags.contains(OFlag::O_APPEND)
+            oflags & libc::O_RDWR != 0 && oflags & libc::O_APPEND == 0
         };
         if opened_correctly {
             Ok(mapped)
@@ -146,16 +163,19 @@ impl Object {
 }
 
 unsafe fn map_impl<T: ViewImpl>(ptr: *mut u8, view: &T) -> Result<*mut u8, Error> {
-    mmap(
+    let mapped = libc::mmap(
         ptr as *mut _,
         view.length().into(),
         view.prot_flags(),
         view.map_flags(),
         view.object().fd,
         u64::from(view.offset()).try_into().unwrap(),
-    )
-    .map(|x| x as *mut u8)
-    .map_err(to_io_error)
+    );
+    if mapped == libc::MAP_FAILED {
+        Err(last_error())
+    } else {
+        Ok(mapped as *mut u8)
+    }
 }
 
 fn map_multiple_impl<T: ViewImpl>(views: &[T]) -> Result<(*mut u8, usize), Error> {
@@ -167,18 +187,23 @@ fn map_multiple_impl<T: ViewImpl>(views: &[T]) -> Result<(*mut u8, usize), Error
         let fd = open_anonymous(len.try_into().unwrap())?;
         // Safety: pointer is selected by kernel
         let ptr = unsafe {
-            mmap(
-                std::ptr::null_mut(),
+            libc::mmap(
+                core::ptr::null_mut(),
                 len,
-                ProtFlags::PROT_NONE,
-                MapFlags::MAP_SHARED,
+                libc::PROT_NONE,
+                libc::MAP_SHARED,
                 fd,
                 0,
             )
         };
-        // close fd unconditionally before checking error
-        close(fd).map_err(to_io_error)?;
-        ptr.map(|ptr| ptr as *mut u8).map_err(to_io_error)
+        let ptr = if ptr == libc::MAP_FAILED {
+            Err(last_error())
+        } else {
+            Ok(ptr as *mut u8)
+        };
+        // Safety: fd is valid
+        unsafe { libc::close(fd) };
+        ptr
     }?;
 
     let mut offset = 0;
@@ -195,7 +220,7 @@ fn map_multiple_impl<T: ViewImpl>(views: &[T]) -> Result<(*mut u8, usize), Error
 pub fn map(view: &View<'_>) -> Result<(*const u8, usize), Error> {
     Ok((
         // Safety: the pointer is selected by the kernel.
-        unsafe { map_impl(std::ptr::null_mut(), view)? as *const u8 },
+        unsafe { map_impl(core::ptr::null_mut(), view)? as *const u8 },
         view.length().into(),
     ))
 }
@@ -203,7 +228,7 @@ pub fn map(view: &View<'_>) -> Result<(*const u8, usize), Error> {
 pub fn map_mut(view: &ViewMut<'_>) -> Result<(*mut u8, usize), Error> {
     Ok((
         // Safety: the pointer is selected by the kernel.
-        unsafe { map_impl(std::ptr::null_mut(), view)? },
+        unsafe { map_impl(core::ptr::null_mut(), view)? },
         view.length().into(),
     ))
 }
@@ -217,21 +242,20 @@ pub fn map_multiple_mut(views: &[ViewMut<'_>]) -> Result<(*mut u8, usize), Error
 }
 
 pub unsafe fn unmap(ptr: *mut u8, view_lengths: impl Iterator<Item = usize>) {
-    munmap(ptr as *mut _, view_lengths.sum()).unwrap();
+    assert_eq!(libc::munmap(ptr as *mut _, view_lengths.sum()), 0);
 }
 
 fn page_size() -> u64 {
-    sysconf(SysconfVar::PAGE_SIZE)
-        .unwrap()
-        .unwrap()
-        .try_into()
-        .unwrap()
+    // Safety: cannot fail
+    let val = unsafe { libc::sysconf(libc::_SC_PAGE_SIZE) };
+    assert!(val != -1);
+    val.try_into().unwrap()
 }
 
-pub fn offset_granularity() -> u64 {
-    page_size()
+pub fn offset_granularity() -> NonZeroUsize {
+    NonZeroUsize::new(page_size().try_into().unwrap()).unwrap()
 }
 
-pub fn length_granularity() -> usize {
-    page_size().try_into().unwrap()
+pub fn length_granularity() -> NonZeroUsize {
+    NonZeroUsize::new(page_size().try_into().unwrap()).unwrap()
 }
