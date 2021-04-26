@@ -3,6 +3,8 @@ use crate::{
     view::{Length, Offset, View, ViewMut},
 };
 use core::{convert::TryInto, num::NonZeroUsize};
+#[cfg(feature = "std")]
+use winapi::um::winnt::{PAGE_EXECUTE_READ, PAGE_READONLY};
 use winapi::{
     shared::minwindef::DWORD,
     um::{
@@ -14,8 +16,8 @@ use winapi::{
         },
         sysinfoapi::{GetSystemInfo, SYSTEM_INFO},
         winnt::{
-            HANDLE, MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE,
-            PAGE_NOACCESS, PAGE_READONLY, PAGE_READWRITE, SEC_COMMIT,
+            HANDLE, MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE_READWRITE, PAGE_NOACCESS,
+            PAGE_READWRITE, SEC_COMMIT,
         },
     },
 };
