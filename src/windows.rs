@@ -139,7 +139,7 @@ impl Object {
         };
         let (size_hi, size_lo) = split_dword(size);
         let handle = CreateFileMappingW(
-            std::os::windows::io::AsRawHandle::as_raw_handle(file),
+            std::os::windows::io::AsRawHandle::as_raw_handle(file) as *mut _,
             core::ptr::null_mut(),
             access,
             size_hi,
