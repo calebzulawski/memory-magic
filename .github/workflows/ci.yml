@@ -29,6 +29,9 @@ jobs:
     - name: Run tests
       shell: bash
       run: cargo test --verbose
+    - name: Run tests (no_std)
+      shell: bash
+      run: cargo test --no-default-features --verbose
 
   lint:
     strategy:
@@ -51,5 +54,7 @@ jobs:
         components: clippy, rustfmt
     - name: Clippy lint
       run: cargo clippy --all-targets -- -D warnings
+    - name: Clippy lint (no_std)
+      run: cargo clippy --all-targets --no-default-features -- -D warnings
     - name: Check formatting
       run: cargo fmt -- --check
