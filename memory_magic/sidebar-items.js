@@ -1,1 +1,1 @@
-initSidebarItems({"mod":[["raw","Functions for allocating and deallocating virtual memory."],["view","Views of objects mapped to shared memory."]]});
+initSidebarItems({"mod":[["raw","Functions for allocating and deallocating virtual memory."],["view","Views of objects mapped to shared memory."]],"struct":[["Error","The error code returned by the OS if something fails."]]});
