@@ -1,3 +1,0 @@
-(function() {var implementors = {};
-implementors["memory_magic"] = [{"text":"impl <a class=\"trait\" href=\"https://doc.rust-lang.org/nightly/core/fmt/trait.Display.html\" title=\"trait core::fmt::Display\">Display</a> for <a class=\"struct\" href=\"memory_magic/struct.Error.html\" title=\"struct memory_magic::Error\">Error</a>","synthetic":false,"types":["memory_magic::error::Error"]}];
-if (window.register_implementors) {window.register_implementors(implementors);} else {window.pending_implementors = implementors;}})()
