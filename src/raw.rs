@@ -4,10 +4,10 @@
 #[cfg_attr(windows, path = "raw/windows.rs")]
 mod map_impl;
 
-pub mod view;
+mod view;
+pub use view::*;
 
-use view::{View, ViewMut};
-use crate::Error;
+use std::io::Error;
 
 /// Map a view of an object to memory.
 ///

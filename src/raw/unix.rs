@@ -1,38 +1,19 @@
 use super::view::{Length, Offset, View, ViewMut};
-use crate::Error;
-use core::{convert::TryInto, num::NonZeroUsize};
+use std::{convert::TryInto, io::Error, num::NonZeroUsize};
 
-fn errno() -> libc::c_int {
-    #[cfg(any(target_os = "solaris", target_os = "illumos"))]
-    use libc::___errno as errno_location;
-    #[cfg(any(target_os = "android", target_os = "netbsd", target_os = "openbsd"))]
-    use libc::__errno as errno_location;
-    #[cfg(any(target_os = "linux", target_os = "redox", target_os = "dragonfly"))]
-    use libc::__errno_location as errno_location;
-    #[cfg(any(target_os = "freebsd", target_os = "ios", target_os = "macos"))]
-    use libc::__error as errno_location;
-
-    unsafe { *errno_location() as libc::c_int }
-}
-
-fn last_error() -> Error {
-    Error(errno() as i32)
-}
-
-#[cfg(feature = "std")]
 fn access_denied() -> Error {
-    Error(libc::EACCES)
+    Error::from_raw_os_error(libc::EACCES)
 }
 
 fn open_anonymous(size: i64) -> Result<libc::c_int, Error> {
     let fd = shm_open_anonymous::shm_open_anonymous();
     if fd == -1 {
-        Err(last_error())
+        Err(Error::last_os_error())
     } else {
         // Safety: fd is valid
         unsafe {
             if libc::ftruncate(fd, size) != 0 {
-                let err = last_error();
+                let err = Error::last_os_error();
                 libc::close(fd);
                 Err(err)
             } else {
@@ -125,16 +106,13 @@ impl Object {
         })
     }
 
-    #[cfg(feature = "std")]
     pub unsafe fn with_file(
         file: &std::fs::File,
         _size: u64,
         write: bool,
         execute: bool,
     ) -> Result<Self, Error> {
-        let file = file
-            .try_clone()
-            .map_err(|e| Error(e.raw_os_error().unwrap_or(0)))?;
+        let file = file.try_clone()?;
         let mapped = Object {
             fd: std::os::unix::io::IntoRawFd::into_raw_fd(file),
             execute,
@@ -145,7 +123,7 @@ impl Object {
         // * We cannot write to a file opened in append-mode with mmap
         let oflags = libc::fcntl(mapped.fd, libc::F_GETFL);
         if oflags == -1 {
-            return Err(last_error());
+            return Err(Error::last_os_error());
         }
         let opened_correctly = if write {
             oflags == libc::O_RDONLY || oflags & libc::O_RDWR != 0
@@ -170,7 +148,7 @@ unsafe fn map_impl<T: ViewImpl>(ptr: *mut u8, view: &T) -> Result<*mut u8, Error
         u64::from(view.offset()).try_into().unwrap(),
     );
     if mapped == libc::MAP_FAILED {
-        Err(last_error())
+        Err(Error::last_os_error())
     } else {
         Ok(mapped as *mut u8)
     }
@@ -195,7 +173,7 @@ fn map_multiple_impl<T: ViewImpl>(views: &[T]) -> Result<(*mut u8, usize), Error
             )
         };
         let ptr = if ptr == libc::MAP_FAILED {
-            Err(last_error())
+            Err(Error::last_os_error())
         } else {
             Ok(ptr as *mut u8)
         };

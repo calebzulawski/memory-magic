@@ -1,8 +1,7 @@
 //! Views of objects mapped to shared memory.
 
 use super::map_impl;
-use crate::Error;
-use core::convert::TryInto;
+use std::{io::Error, convert::TryInto};
 use once_cell::race::OnceNonZeroUsize;
 
 /// Permissions for file mapping.
@@ -59,7 +58,6 @@ impl Object {
     ///
     /// # Safety
     /// See [`FileOptions::new`].
-    #[cfg(feature = "std")]
     pub unsafe fn with_file(file: &std::fs::File) -> FileOptions<'_> {
         FileOptions::new(file)
     }
@@ -110,14 +108,12 @@ impl Object {
 }
 
 /// Options for opening a file mapping.
-#[cfg(feature = "std")]
 pub struct FileOptions<'a> {
     file: &'a std::fs::File,
     write: bool,
     execute: bool,
 }
 
-#[cfg(feature = "std")]
 impl<'a> FileOptions<'a> {
     /// Create a new set of options for opening a file mapping.
     ///
@@ -158,8 +154,7 @@ impl<'a> FileOptions<'a> {
     pub fn finish(&self) -> Result<Object, Error> {
         let size = self
             .file
-            .metadata()
-            .map_err(|e| Error(e.raw_os_error().unwrap_or(0)))?
+            .metadata()?
             .len();
         // Safety: unsafe is pushed off to `new`
         let inner =
