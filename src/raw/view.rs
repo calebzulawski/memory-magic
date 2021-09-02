@@ -1,6 +1,6 @@
 //! Views of objects mapped to shared memory.
 
-use crate::map_impl;
+use super::map_impl;
 use crate::Error;
 use core::convert::TryInto;
 use once_cell::race::OnceNonZeroUsize;

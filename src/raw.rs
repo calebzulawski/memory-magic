@@ -1,7 +1,12 @@
 //! Functions for allocating and deallocating virtual memory.
 
-use crate::map_impl;
-use crate::view::{View, ViewMut};
+#[cfg_attr(unix, path = "raw/unix.rs")]
+#[cfg_attr(windows, path = "raw/windows.rs")]
+mod map_impl;
+
+pub mod view;
+
+use view::{View, ViewMut};
 use crate::Error;
 
 /// Map a view of an object to memory.

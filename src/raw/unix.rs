@@ -1,7 +1,5 @@
-use crate::{
-    view::{Length, Offset, View, ViewMut},
-    Error,
-};
+use super::view::{Length, Offset, View, ViewMut};
+use crate::Error;
 use core::{convert::TryInto, num::NonZeroUsize};
 
 fn errno() -> libc::c_int {
