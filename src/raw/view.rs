@@ -1,8 +1,8 @@
 //! Views of objects mapped to shared memory.
 
 use super::map_impl;
-use std::{io::Error, convert::TryInto};
 use once_cell::race::OnceNonZeroUsize;
+use std::{convert::TryInto, io::Error};
 
 /// Permissions for file mapping.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -152,10 +152,7 @@ impl<'a> FileOptions<'a> {
 
     /// Open a mapping object with the specified options.
     pub fn finish(&self) -> Result<Object, Error> {
-        let size = self
-            .file
-            .metadata()?
-            .len();
+        let size = self.file.metadata()?.len();
         // Safety: unsafe is pushed off to `new`
         let inner =
             unsafe { map_impl::Object::with_file(self.file, size, self.write, self.execute)? };
