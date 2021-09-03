@@ -284,14 +284,11 @@
 <span id="284">284</span>
 <span id="285">285</span>
 <span id="286">286</span>
-<span id="287">287</span>
-<span id="288">288</span>
-<span id="289">289</span>
 </pre><pre class="rust"><code><span class="doccomment">//! Views of objects mapped to shared memory.</span>
 
 <span class="kw">use</span> <span class="ident"><span class="kw">super</span>::map_impl</span>;
-<span class="kw">use</span> <span class="ident">std</span>::{<span class="ident">io::Error</span>, <span class="ident">convert::TryInto</span>};
 <span class="kw">use</span> <span class="ident">once_cell::race::OnceNonZeroUsize</span>;
+<span class="kw">use</span> <span class="ident">std</span>::{<span class="ident">convert::TryInto</span>, <span class="ident">io::Error</span>};
 
 <span class="doccomment">/// Permissions for file mapping.</span>
 <span class="attribute">#[<span class="ident">derive</span>(<span class="ident">Copy</span>, <span class="ident">Clone</span>, <span class="ident">Debug</span>, <span class="ident">PartialEq</span>)]</span>
@@ -441,10 +438,7 @@
 
     <span class="doccomment">/// Open a mapping object with the specified options.</span>
     <span class="kw">pub</span> <span class="kw">fn</span> <span class="ident">finish</span>(<span class="kw-2">&amp;</span><span class="self">self</span>) <span class="op">-</span><span class="op">&gt;</span> <span class="prelude-ty">Result</span><span class="op">&lt;</span><span class="ident">Object</span>, <span class="ident">Error</span><span class="op">&gt;</span> {
-        <span class="kw">let</span> <span class="ident">size</span> <span class="op">=</span> <span class="self">self</span>
-            .<span class="ident">file</span>
-            .<span class="ident">metadata</span>()<span class="question-mark">?</span>
-            .<span class="ident">len</span>();
+        <span class="kw">let</span> <span class="ident">size</span> <span class="op">=</span> <span class="self">self</span>.<span class="ident">file</span>.<span class="ident">metadata</span>()<span class="question-mark">?</span>.<span class="ident">len</span>();
         <span class="comment">// Safety: unsafe is pushed off to `new`</span>
         <span class="kw">let</span> <span class="ident">inner</span> <span class="op">=</span>
             <span class="kw">unsafe</span> { <span class="ident">map_impl::Object::with_file</span>(<span class="self">self</span>.<span class="ident">file</span>, <span class="ident">size</span>, <span class="self">self</span>.<span class="ident">write</span>, <span class="self">self</span>.<span class="ident">execute</span>)<span class="question-mark">?</span> };

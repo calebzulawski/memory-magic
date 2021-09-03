@@ -1,0 +1,3 @@
+(function() {var implementors = {};
+implementors["memory_magic"] = [{"text":"impl&lt;T&gt; <a class=\"trait\" href=\"https://doc.rust-lang.org/nightly/core/ops/deref/trait.DerefMut.html\" title=\"trait core::ops::deref::DerefMut\">DerefMut</a> for <a class=\"struct\" href=\"memory_magic/struct.Mirror.html\" title=\"struct memory_magic::Mirror\">Mirror</a>&lt;T&gt;","synthetic":false,"types":["memory_magic::mirror::Mirror"]}];
+if (window.register_implementors) {window.register_implementors(implementors);} else {window.pending_implementors = implementors;}})()
