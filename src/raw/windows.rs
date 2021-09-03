@@ -1,8 +1,5 @@
-use crate::{
-    error::Error,
-    view::{Length, Offset, View, ViewMut},
-};
-use core::{convert::TryInto, num::NonZeroUsize};
+use crate::raw::{Length, Offset, View, ViewMut};
+use std::{convert::TryInto, io::Error, num::NonZeroUsize};
 use winapi::{
     shared::minwindef::DWORD,
     um::{
@@ -19,10 +16,6 @@ use winapi::{
         },
     },
 };
-
-fn last_error() -> Error {
-    unsafe { Error(GetLastError() as i32) }
-}
 
 trait ViewImpl {
     fn offset(&self) -> Offset;
@@ -118,7 +111,7 @@ impl Object {
             )
         };
         if handle == INVALID_HANDLE_VALUE {
-            Err(last_error())
+            Err(Error::last_os_error())
         } else {
             Ok(Self { handle })
         }
@@ -146,7 +139,7 @@ impl Object {
             core::ptr::null_mut(),
         );
         if handle == INVALID_HANDLE_VALUE {
-            Err(last_error())
+            Err(Error::last_os_error())
         } else {
             Ok(Self { handle })
         }
@@ -184,7 +177,7 @@ unsafe fn map_impl<T: ViewImpl>(ptr: *mut u8, view: &T) -> Result<*mut u8, Error
         ptr as *mut _,
     );
     if addr.is_null() {
-        Err(last_error())
+        Err(Error::last_os_error())
     } else {
         Ok(addr as *mut u8)
     }
@@ -202,7 +195,7 @@ fn map_multiple_impl<T: ViewImpl>(views: &[T]) -> Result<(*mut u8, usize), Error
         let ptr = unsafe {
             let ptr = VirtualAlloc(core::ptr::null_mut(), len, MEM_RESERVE, PAGE_NOACCESS);
             if ptr.is_null() || VirtualFree(ptr, 0, MEM_RELEASE) == 0 {
-                return Err(last_error());
+                return Err(Error::last_os_error());
             }
             ptr as *mut u8
         };
