@@ -3,7 +3,6 @@ use std::{convert::TryInto, io::Error, num::NonZeroUsize};
 use winapi::{
     shared::minwindef::DWORD,
     um::{
-        errhandlingapi::GetLastError,
         handleapi::INVALID_HANDLE_VALUE,
         memoryapi::{
             CreateFileMappingW, MapViewOfFileEx, UnmapViewOfFile, VirtualAlloc, VirtualFree,
